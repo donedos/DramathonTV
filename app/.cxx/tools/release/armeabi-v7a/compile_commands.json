@@ -1,0 +1,7 @@
+[
+{
+  "directory": "/Users/zed/AndroidStudioProjects/DramaThonTV/app/.cxx/RelWithDebInfo/o2a5d81g/armeabi-v7a",
+  "command": "/Users/zed/Library/Android/sdk/ndk/28.2.13676358/toolchains/llvm/prebuilt/darwin-x86_64/bin/clang++ --target=armv7-none-linux-androideabi26 --sysroot=/Users/zed/Library/Android/sdk/ndk/28.2.13676358/toolchains/llvm/prebuilt/darwin-x86_64/sysroot -Dnative_lib_EXPORTS -g -DANDROID -fdata-sections -ffunction-sections -funwind-tables -fstack-protector-strong -no-canonical-prefixes -D_FORTIFY_SOURCE=2 -march=armv7-a -mthumb -Wformat -Werror=format-security   -O2 -g -DNDEBUG -fPIC -o CMakeFiles/native-lib.dir/native-lib.cpp.o -c /Users/zed/AndroidStudioProjects/DramaThonTV/app/src/main/cpp/native-lib.cpp",
+  "file": "/Users/zed/AndroidStudioProjects/DramaThonTV/app/src/main/cpp/native-lib.cpp"
+}
+]

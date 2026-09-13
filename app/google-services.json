@@ -1,0 +1,30 @@
+{
+  "project_info": {
+    "project_number": "552243751265",
+    "firebase_url": "https://dramathonkey-default-rtdb.asia-southeast1.firebasedatabase.app",
+    "project_id": "dramathonkey",
+    "storage_bucket": "dramathonkey.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:552243751265:android:bf07a36f8268ebf7a43d20",
+        "android_client_info": {
+          "package_name": "com.dramathon.dramathonplus"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDZiCVFuLl5Z2_qDIHqm5CE4o81cxx_R7I"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

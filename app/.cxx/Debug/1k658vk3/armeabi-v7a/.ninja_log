@@ -1,0 +1,9 @@
+# ninja log v5
+0	1060	1788781820167616185	CMakeFiles/native-lib.dir/native-lib.cpp.o	35d2222317ff55d4
+1063	1135	1788781820241165391	/Users/zed/AndroidStudioProjects/DramaThonTV/app/build/intermediates/cxx/Debug/1k658vk3/obj/armeabi-v7a/libnative-lib.so	eba3b5886e94aaf9
+0	11	0	clean	26477170522630d9
+3	1538	1788786626906043499	CMakeFiles/native-lib.dir/native-lib.cpp.o	35d2222317ff55d4
+1539	1982	1788786627348968154	/Users/zed/AndroidStudioProjects/DramaThonTV/app/build/intermediates/cxx/Debug/1k658vk3/obj/armeabi-v7a/libnative-lib.so	eba3b5886e94aaf9
+0	9	0	clean	26477170522630d9
+3	953	1789295277684573690	CMakeFiles/native-lib.dir/native-lib.cpp.o	35d2222317ff55d4
+953	1175	1789295277897811349	/Users/zed/AndroidStudioProjects/DramaThonTV/app/build/intermediates/cxx/Debug/1k658vk3/obj/armeabi-v7a/libnative-lib.so	eba3b5886e94aaf9

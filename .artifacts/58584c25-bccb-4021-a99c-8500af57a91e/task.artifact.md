@@ -1,0 +1,7 @@
+- [x] Configure `build.gradle.kts` for R8 (minify/shrink) and CMake support
+- [x] Create `CMakeLists.txt` and `native-lib.cpp` in `src/main/cpp`
+- [x] Refactor `Signer.kt` to load `native-lib` and call external methods for key parts
+- [x] Refactor `VideoDecryptor.kt` to load `native-lib` and call external method for Master Key
+- [x] Delete obsolete `Obfuscation.kt`
+- [x] Create `proguard-rules.pro` with JNI and model keep rules
+- [x] Verify release build with `gradlew assembleRelease`
