@@ -1,6 +1,9 @@
 package com.dramathon.dramathonplus.client
 
 import android.util.Log
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import org.json.JSONArray
 import org.json.JSONObject
@@ -60,53 +63,36 @@ object EpisodeFetcher {
                 result[c.optLong("chapterId")] = c
             }
 
-            if (limit > 0 && result.size >= limit) {
-                // Limit reached after first batch
-            } else {
-                var currentIdx = 6
-                var retryCount = 0
-                var consecutiveSkips = 0
-                val MAX_RETRIES = 3
-
-                while (currentIdx <= totalChapters) {
-                    if (limit > 0 && result.size >= limit) break
-                    
-                    val batchData = fetchBatch(currentIdx)
-                    val batchChapters = batchData?.optJSONArray("chapterList")
-                    
-                    if (batchChapters != null && batchChapters.length() > 0) {
-                        val receivedIndex = batchChapters.getJSONObject(0).optInt("chapterIndex")
-                        if (receivedIndex >= (currentIdx - 5)) {
-                            for (i in 0 until batchChapters.length()) {
-                                val c = batchChapters.getJSONObject(i)
-                                result[c.optLong("chapterId")] = c
-                            }
-                            currentIdx += 5
-                            retryCount = 0
-                            consecutiveSkips = 0
-                        } else {
-                            retryCount++
-                            if (retryCount >= MAX_RETRIES) {
-                                currentIdx += 5
-                                retryCount = 0
-                                consecutiveSkips++
-                                if (consecutiveSkips >= 2) break
-                            } else {
-                                delay(2000)
+            if (!(limit > 0 && result.size >= limit) && totalChapters > 5) {
+                // Parallel fetching for speed
+                val batchIndexes = (6..totalChapters step 5).toList()
+                
+                coroutineScope {
+                    // Fetch in chunks of 5 parallel requests to balance speed and stability
+                    batchIndexes.chunked(5).forEach { chunk ->
+                        if (limit > 0 && result.size >= limit) return@forEach
+                        
+                        val deferreds = chunk.map { idx ->
+                            async(Dispatchers.IO) {
+                                fetchBatch(idx)
                             }
                         }
-                    } else {
-                        retryCount++
-                        if (retryCount >= MAX_RETRIES) {
-                            currentIdx += 5
-                            retryCount = 0
-                            consecutiveSkips++
-                            if (consecutiveSkips >= 2) break
-                        } else {
-                            delay(2000)
+                        
+                        deferreds.forEach { deferred ->
+                            try {
+                                val batchData = deferred.await()
+                                val batchChapters = batchData?.optJSONArray("chapterList")
+                                if (batchChapters != null) {
+                                    for (i in 0 until batchChapters.length()) {
+                                        val c = batchChapters.getJSONObject(i)
+                                        result[c.optLong("chapterId")] = c
+                                    }
+                                }
+                            } catch (e: Exception) {
+                                Log.e(TAG, "Parallel fetch failed", e)
+                            }
                         }
                     }
-                    delay(800)
                 }
             }
         }

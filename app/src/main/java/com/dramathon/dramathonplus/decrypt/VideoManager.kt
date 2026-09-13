@@ -52,10 +52,10 @@ object VideoManager {
                 return@withContext saveToTempFile(data, context, "error_raw_${System.currentTimeMillis()}.mp4")
             }
             
-            val decryptedData = VideoDecryptor.decryptSamples(data, aesKey, tracks)
+            VideoDecryptor.decryptSamples(data, aesKey, tracks)
             Log.d(TAG, "Decryption complete.")
             
-            return@withContext saveToTempFile(decryptedData, context, "decrypted_${System.currentTimeMillis()}.mp4")
+            return@withContext saveToTempFile(data, context, "decrypted_${System.currentTimeMillis()}.mp4")
         } catch (e: Exception) {
             Log.e(TAG, "Failed to prepare video", e)
             null

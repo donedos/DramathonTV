@@ -3,7 +3,9 @@ package com.dramathon.dramathonplus.ui
 import android.app.Activity
 import android.app.PictureInPictureParams
 import android.content.ComponentName
+import android.os.Bundle
 import android.os.Build
+import android.util.Log
 import android.util.Rational
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
@@ -36,14 +38,12 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
-import androidx.core.net.toUri
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
 import androidx.media3.common.Player
-import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.session.MediaController
 import androidx.media3.session.SessionToken
 import androidx.media3.ui.PlayerView
@@ -102,6 +102,20 @@ fun VideoPlayer(
                 mediaController = controller
                 
                 controller.addListener(object : Player.Listener {
+                    override fun onEvents(player: Player, events: Player.Events) {
+                        if (events.contains(Player.EVENT_MEDIA_ITEM_TRANSITION) || 
+                            events.contains(Player.EVENT_TIMELINE_CHANGED) ||
+                            events.contains(Player.EVENT_PLAYBACK_STATE_CHANGED)) {
+                            
+                            val currentItem = player.currentMediaItem
+                            val uri = currentItem?.localConfiguration?.uri?.toString() ?: ""
+                            Log.d("VideoPlayer", "onEvents: URI=$uri, state=${player.playbackState}")
+                            isEpisodeLoading = uri.startsWith("https://dramathonplus.com/ep_") || 
+                                             player.playbackState == Player.STATE_BUFFERING ||
+                                             (player.playbackState == Player.STATE_IDLE && uri.isNotEmpty())
+                        }
+                    }
+
                     override fun onPlaybackStateChanged(state: Int) {
                         if (state == Player.STATE_READY) {
                             duration = controller.contentDuration.coerceAtLeast(0)
@@ -128,6 +142,8 @@ fun VideoPlayer(
                     }
 
                     override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
+                        isEpisodeLoading = mediaItem?.localConfiguration?.uri?.toString()?.startsWith("https://dramathonplus.com/ep_") == true
+
                         if (reason == Player.MEDIA_ITEM_TRANSITION_REASON_SEEK || 
                             reason == Player.MEDIA_ITEM_TRANSITION_REASON_AUTO) {
                             val currentIndex = controller.currentMediaItemIndex
@@ -148,21 +164,31 @@ fun VideoPlayer(
 
         onDispose {
             mediaController?.let {
-                if (it.isPlaying) {
-                    it.stop()
-                }
                 it.release()
             }
             controllerFuture?.let { MediaController.releaseFuture(it) }
         }
     }
 
-    LaunchedEffect(episodes, mediaController) {
+    LaunchedEffect(episodes, mediaController, isUnlocked) {
         val controller = mediaController ?: return@LaunchedEffect
+        
+        // Only update if the playlist length or IDs have changed, or if unlock status changed
+        val currentItemCount = controller.mediaItemCount
+        val shouldFullReload = currentItemCount != episodes.size || 
+                             (currentItemCount > 0 && controller.getMediaItemAt(0).mediaId != episodes.firstOrNull()?.optLong("chapterId")?.toString())
+        
         val items = episodes.map { ep ->
+            val bundle = Bundle().apply {
+                putString("real_url", ep.optString("videoPath"))
+                putBoolean("is_unlocked", isUnlocked)
+                putInt("chapter_index", ep.optInt("chapterIndex"))
+            }
+
             val metadata = MediaMetadata.Builder()
                 .setTitle(ep.optString("chapterName").ifEmpty { "Episode ${ep.optInt("chapterIndex") + 1}" })
                 .setArtist("DramaThon Plus")
+                .setExtras(bundle)
                 .build()
             MediaItem.Builder()
                 .setMediaId(ep.optLong("chapterId").toString())
@@ -170,41 +196,40 @@ fun VideoPlayer(
                 .setUri("https://dramathonplus.com/ep_${ep.optInt("chapterIndex")}")
                 .build()
         }
-        controller.setMediaItems(items)
-        val index = episodes.indexOfFirst { it.optInt("chapterIndex") == episode.optInt("chapterIndex") }
-        if (index != -1) {
-            controller.seekToDefaultPosition(index)
+
+        if (shouldFullReload) {
+            val index = episodes.indexOfFirst { it.optInt("chapterIndex") == episode.optInt("chapterIndex") }
+            if (index != -1) {
+                controller.setMediaItems(items, index, 0L)
+            } else {
+                controller.setMediaItems(items)
+            }
+            controller.prepare()
+        } else {
+            // Just update metadata/extras for existing items if they changed (e.g. isUnlocked)
+            for (i in 0 until controller.mediaItemCount) {
+                val existingItem = controller.getMediaItemAt(i)
+                val newItem = items[i]
+                // Preserve the local URI if it's already been decrypted
+                val finalItem = if (existingItem.localConfiguration?.uri?.toString()?.startsWith("file://") == true) {
+                    newItem.buildUpon().setUri(existingItem.localConfiguration?.uri).build()
+                } else {
+                    newItem
+                }
+                controller.replaceMediaItem(i, finalItem)
+            }
         }
     }
 
+    // Decryption is handled by PlaybackService via the dummy URI and metadata extras.
     LaunchedEffect(episode, mediaController) {
         val controller = mediaController ?: return@LaunchedEffect
         val expectedIndex = episodes.indexOfFirst { it.optInt("chapterIndex") == episode.optInt("chapterIndex") }
-        
+
         if (expectedIndex != -1 && controller.currentMediaItemIndex != expectedIndex) {
             controller.seekToDefaultPosition(expectedIndex)
-        }
-
-        val videoUrl = episode.optString("videoPath")
-        if (videoUrl.isNotEmpty()) {
-            isEpisodeLoading = true
-            // Pause current while loading next to keep in sync
-            controller.pause()
-            
-            val file = VideoManager.prepareDecryptedVideo(videoUrl, context)
-            if (file != null) {
-                val currentItem = controller.getMediaItemAt(expectedIndex)
-                val newItem = currentItem.buildUpon()
-                    .setUri(file.toUri())
-                    .build()
-                
-                controller.replaceMediaItem(expectedIndex, newItem)
-                if (controller.currentMediaItemIndex == expectedIndex) {
-                    controller.prepare()
-                    controller.play()
-                }
-            }
-            isEpisodeLoading = false
+            controller.prepare()
+            controller.play()
         }
     }
 
@@ -509,6 +534,7 @@ fun VideoPlayer(
             CodeEntryDialog(
                 onDismiss = { 
                     showUnlockDialog = false
+                    mediaController?.stop()
                     onClose()
                 },
                 onUnlock = { code, callback ->

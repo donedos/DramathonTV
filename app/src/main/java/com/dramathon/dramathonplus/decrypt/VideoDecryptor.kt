@@ -55,8 +55,7 @@ object VideoDecryptor {
         return bytes.joinToString("") { "%02x".format(it) }
     }
 
-    fun decryptSamples(data: ByteArray, aesKey: ByteArray, tracks: Mp4Parser.Tracks): ByteArray {
-        val output = data.clone()
+    fun decryptSamples(data: ByteArray, aesKey: ByteArray, tracks: Mp4Parser.Tracks) {
         val cipher = Cipher.getInstance("AES/ECB/NoPadding")
         cipher.init(Cipher.DECRYPT_MODE, SecretKeySpec(aesKey, "AES"))
         
@@ -64,18 +63,14 @@ object VideoDecryptor {
             if (s.size < 16) continue
             val nB = s.size / 16
             val encLen = nB * 16
-            val dec = cipher.doFinal(data, s.offset.toInt(), encLen)
-            System.arraycopy(dec, 0, output, s.offset.toInt(), encLen)
+            cipher.doFinal(data, s.offset.toInt(), encLen, data, s.offset.toInt())
         }
         
         for (s in tracks.audio) {
             if (s.size < 16) continue
             val nB = s.size / 16
             val encLen = nB * 16
-            val dec = cipher.doFinal(data, s.offset.toInt(), encLen)
-            System.arraycopy(dec, 0, output, s.offset.toInt(), encLen)
+            cipher.doFinal(data, s.offset.toInt(), encLen, data, s.offset.toInt())
         }
-        
-        return output
     }
 }
