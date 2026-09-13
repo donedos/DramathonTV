@@ -127,10 +127,7 @@ fun MainContent(viewModel: DramaViewModel) {
     }
 
     val tabs = listOf(
-        TabInfo("latest", "Latest", Icons.Default.NewReleases),
-        TabInfo("trending", "Trending", Icons.AutoMirrored.Filled.TrendingUp),
-        TabInfo("foryou", "For You", Icons.Default.Favorite),
-        TabInfo("dubindo", "Dub ID", Icons.Default.Language),
+        TabInfo("explore", "Explore", Icons.Default.Explore),
         TabInfo("more", "More Series", Icons.Default.GridView),
         TabInfo("myfavorite", "My Favorites", Icons.Default.Bookmarks),
         TabInfo("settings", "Settings", Icons.Default.Settings)

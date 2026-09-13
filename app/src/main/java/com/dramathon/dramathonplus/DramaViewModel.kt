@@ -7,7 +7,6 @@ import com.dramathon.dramathonplus.client.CacheManager
 import com.dramathon.dramathonplus.client.DramaBoxApi
 import com.dramathon.dramathonplus.client.DramaCategories
 import com.dramathon.dramathonplus.client.EpisodeFetcher
-import android.util.Log
 import com.google.firebase.database.DataSnapshot
 import com.google.firebase.database.DatabaseError
 import com.google.firebase.database.DatabaseReference
@@ -24,6 +23,7 @@ import okhttp3.Request
 import org.json.JSONArray
 import org.json.JSONObject
 import android.provider.Settings
+import android.util.Log
 import java.text.SimpleDateFormat
 import java.util.*
 
@@ -69,7 +69,7 @@ class DramaViewModel : ViewModel() {
     private val _loading = MutableStateFlow(false)
     val loading: StateFlow<Boolean> = _loading
     
-    private val _currentTab = MutableStateFlow("latest")
+    private val _currentTab = MutableStateFlow("explore")
     val currentTab: StateFlow<String> = _currentTab
 
     private val _watchedEpisodes = MutableStateFlow<Set<String>>(emptySet())
@@ -121,7 +121,7 @@ class DramaViewModel : ViewModel() {
 
     init {
         viewModelScope.launch {
-            loadTab("latest")
+            loadTab("explore")
         }
     }
 
@@ -597,11 +597,8 @@ class DramaViewModel : ViewModel() {
         _loading.value = true
         try {
             val res = when (tab) {
-                "latest" -> DramaBoxApi.latest()
-                "trending" -> DramaBoxApi.trendings()
-                "foryou" -> DramaBoxApi.foryou()
+                "explore" -> DramaBoxApi.latest()
                 "vip" -> DramaBoxApi.vip()
-                "dubindo" -> DramaBoxApi.dubindo()
                 else -> DramaBoxApi.latest()
             }
             
@@ -794,10 +791,7 @@ class DramaViewModel : ViewModel() {
                 } else {
                     val tab = _currentTab.value
                     val res = when (tab) {
-                        "latest" -> DramaBoxApi.latest(pageToLoad)
-                        "trending" -> DramaBoxApi.trendings(pageToLoad)
-                        "foryou" -> DramaBoxApi.foryou(pageToLoad)
-                        "dubindo" -> DramaBoxApi.dubindo(page = pageToLoad)
+                        "explore" -> DramaBoxApi.latest(pageToLoad)
                         else -> null
                     }
                     
@@ -830,7 +824,7 @@ class DramaViewModel : ViewModel() {
                 }
                 
                 if (list.length() == 0) {
-                    if (_currentSearchKeyword == null && _currentTab.value != "foryou") {
+                    if (_currentSearchKeyword == null && _currentTab.value == "explore") {
                         try {
                             val supRes = DramaBoxApi.foryou(pageToLoad)
                             val supData = supRes.optJSONObject("data")
@@ -888,6 +882,33 @@ class DramaViewModel : ViewModel() {
                     if (newCount > 0) {
                         _dramas.value = merged
                         currentPage = pageToLoad
+                    } else if (_currentSearchKeyword == null && _currentTab.value == "explore") {
+                        try {
+                            val supRes = DramaBoxApi.foryou(pageToLoad)
+                            val supData = supRes.optJSONObject("data")
+                            val supRecs = supData?.optJSONObject("recommendList")?.optJSONArray("records")
+                            if (supRecs != null) {
+                                var supNewCount = 0
+                                for (i in 0 until supRecs.length()) {
+                                    val drama = supRecs.optJSONObject(i) ?: continue
+                                    val id = drama.optLong("bookId")
+                                    if (id != 0L && seenIds.add(id)) {
+                                        merged.put(drama)
+                                        supNewCount++
+                                    }
+                                }
+                                if (supNewCount > 0) {
+                                    _dramas.value = merged
+                                    currentPage = pageToLoad
+                                } else {
+                                    _isEndReached.value = true
+                                }
+                            } else {
+                                _isEndReached.value = true
+                            }
+                        } catch (_: Exception) {
+                            _isEndReached.value = true
+                        }
                     } else {
                         _isEndReached.value = true
                     }
