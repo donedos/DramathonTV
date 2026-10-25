@@ -8,6 +8,7 @@ import android.content.res.Configuration
 import android.os.Build
 import android.os.Bundle
 import android.util.Rational
+import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
@@ -21,22 +22,30 @@ import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.tv.material3.Surface
 import coil.ImageLoader
+import coil.compose.LocalImageLoader
 import com.dramathon.dramathonplus.ui.MainScreen
 import com.dramathon.dramathonplus.ui.theme.DramaThonPlusTheme
 import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
     private var viewModel: DramaViewModel? = null
-    
+
     private val requestPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { _ -> }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        
+
+        if (BuildConfig.SCREEN_CAPTURE_PROTECTED) {
+            window.setFlags(
+                WindowManager.LayoutParams.FLAG_SECURE,
+                WindowManager.LayoutParams.FLAG_SECURE
+            )
+        }
+
         checkNotificationPermission()
-        
+
         val imageLoader = ImageLoader.Builder(this)
             .crossfade(true)
             .build()
@@ -53,7 +62,7 @@ class MainActivity : ComponentActivity() {
 
             val isDarkMode by vm.isDarkMode.collectAsState()
 
-            CompositionLocalProvider(coil.compose.LocalImageLoader provides imageLoader) {
+            CompositionLocalProvider(LocalImageLoader provides imageLoader) {
                 DramaThonPlusTheme(darkTheme = isDarkMode) {
                     Surface {
                         MainScreen(vm)

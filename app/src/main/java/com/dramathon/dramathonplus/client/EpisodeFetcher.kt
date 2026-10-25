@@ -37,7 +37,12 @@ object EpisodeFetcher {
             val res = DramaBoxClient.post("/drama-box/chapterv2/batch/load", payload)
             val data = res.optJSONObject("data")
             
-            if (data == null || !data.has("chapterList") || data.getJSONArray("chapterList").length() == 0) {
+            if (data == null) {
+                // The request itself failed, refreshing the token would not help.
+                Log.w(TAG, "Chapter request failed for idx $idx: ${res.optString("message")}")
+                return null
+            }
+            if (!data.has("chapterList") || data.getJSONArray("chapterList").length() == 0) {
                 if (idx != savedPayChapterNum && !isRetry) {
                     Log.w(TAG, "Empty data for idx $idx. Retrying with token refresh...")
                     TokenManager.bootstrap()
@@ -103,39 +108,59 @@ object EpisodeFetcher {
 
         val finalArray = JSONArray()
         finalResult.forEach { ep -> 
-            val pickedPath = pickVideoPath(ep)
-            if (pickedPath.isNotEmpty()) {
-                ep.put("videoPath", pickedPath)
+            val candidates = collectVideoPaths(ep)
+            if (candidates.isNotEmpty()) {
+                ep.put("videoPath", candidates.first())
             }
+            // Fallback candidates, best first, used when the preferred rendition fails.
+            ep.put("videoPaths", JSONArray(candidates))
+            ep.put(
+                "isLocked",
+                ep.optInt("isCharge") == 1 || ep.optBoolean("chargeChapter", false)
+            )
             finalArray.put(ep) 
         }
         return finalArray
     }
 
-    private fun pickVideoPath(ep: JSONObject): String {
-        val cdnList = ep.optJSONArray("cdnList") ?: return ep.optString("videoPath")
-        val allPaths = mutableListOf<JSONObject>()
-        val seenQualities = mutableSetOf<Int>()
-
+    /**
+     * Collects every downloadable rendition of a chapter, ordered from the highest
+     * quality down. Each quality lives on its own encrypted object, so a single
+     * broken quality must not stop the episode from playing.
+     */
+    private fun collectVideoPaths(ep: JSONObject): List<String> {
+        val cdnList = ep.optJSONArray("cdnList") ?: return listOf(ep.optString("videoPath")).filter { it.isNotEmpty() }
+        val perCdn = mutableListOf<List<Pair<Int, String>>>()
         for (i in 0 until cdnList.length()) {
-            val cdn = cdnList.getJSONObject(i)
+            val cdn = cdnList.optJSONObject(i) ?: continue
             val pathList = cdn.optJSONArray("videoPathList") ?: continue
+            val entries = mutableListOf<Pair<Int, String>>()
             for (j in 0 until pathList.length()) {
-                val pathObj = pathList.getJSONObject(j)
-                val quality = pathObj.optInt("quality")
-                if (!seenQualities.contains(quality)) {
-                    seenQualities.add(quality)
-                    allPaths.add(pathObj)
-                }
+                val pathObj = pathList.optJSONObject(j) ?: continue
+                val url = pathObj.optString("videoPath")
+                if (url.isNotEmpty()) entries.add(pathObj.optInt("quality") to url)
+            }
+            if (entries.isNotEmpty()) perCdn.add(entries.sortedByDescending { it.first })
+        }
+
+        val usable = perCdn.filter { cdn ->
+            cdn.any { it.second.contains("dramaboxdb.com") || it.second.contains("dramabox.com") }
+        }
+        val pools = if (usable.isNotEmpty()) usable else perCdn
+
+        val ordered = LinkedHashSet<String>()
+        // Highest quality of every CDN first, then step down one quality at a time.
+        val maxQuality = pools.maxOf { cdn -> cdn.first().first }
+        for (quality in maxQuality downTo 1) {
+            pools.forEach { cdn ->
+                cdn.firstOrNull { it.first == quality }?.let { ordered.add(it.second) }
             }
         }
+        if (ordered.isEmpty()) ep.optString("videoPath").takeIf { it.isNotEmpty() }?.let { ordered.add(it) }
+        return ordered.toList()
+    }
 
-        val usablePaths = allPaths.filter {
-            val url = it.optString("videoPath")
-            url.contains("dramaboxdb.com") || url.contains("dramabox.com")
-        }
-
-        val finalPaths = if (usablePaths.isNotEmpty()) usablePaths else allPaths
-        return finalPaths.maxByOrNull { it.optInt("quality") }?.optString("videoPath") ?: ep.optString("videoPath")
+    private fun pickVideoPath(ep: JSONObject): String {
+        return collectVideoPaths(ep).firstOrNull() ?: ep.optString("videoPath")
     }
 }

@@ -1,6 +1,7 @@
 package com.dramathon.dramathonplus.ui
 
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
@@ -30,6 +31,7 @@ import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import com.dramathon.dramathonplus.ui.theme.*
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import org.json.JSONArray
 import org.json.JSONObject
@@ -43,6 +45,7 @@ fun DramaDetailView(
     isUnlocked: Boolean = false,
     initialScrollIndex: Int = -1,
     isFavorite: Boolean = false,
+    episodesError: String? = null,
     onEpisodeClick: (JSONObject) -> Unit,
     onUnlock: (String, (Boolean, String?) -> Unit) -> Unit,
     onFavoriteToggle: () -> Unit,
@@ -61,19 +64,31 @@ fun DramaDetailView(
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val listState = rememberLazyListState()
-    val headerFocusRequester = remember { FocusRequester() }
-    val firstItemFocusRequester = remember { FocusRequester() }
+    val thumbnailFocusRequester = remember { FocusRequester() }
+    val episodesHeaderFocusRequester = remember { FocusRequester() }
+    val episodeFocusRequesters = remember(list.size) { 
+        List(list.size) { FocusRequester() } 
+    }
     
     var showCodeEntryDialog by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) {
-        headerFocusRequester.requestFocus()
+        if (initialScrollIndex < 0) {
+            thumbnailFocusRequester.requestFocus()
+        }
     }
 
     LaunchedEffect(initialScrollIndex) {
-        if (initialScrollIndex >= 0) {
+        if (initialScrollIndex >= 0 && initialScrollIndex < list.size) {
             // Header is item 0, episodes start at 1
-            listState.scrollToItem((initialScrollIndex + 1).coerceAtMost(list.size))
+            listState.scrollToItem(initialScrollIndex + 1)
+            // Small delay to ensure the item is in composition after scroll
+            delay(100)
+            try {
+                episodeFocusRequesters[initialScrollIndex].requestFocus()
+            } catch (e: Exception) {
+                // Ignore if requester not yet attached
+            }
         }
     }
 
@@ -91,12 +106,27 @@ fun DramaDetailView(
                             .addHeader("User-Agent", "okhttp/4.12.0")
                             .build()
                     }
-                    AsyncImage(
-                        model = imageRequest,
-                        contentDescription = null,
-                        modifier = Modifier.width(240.dp).aspectRatio(3f/4f).clip(RoundedCornerShape(12.dp)),
-                        contentScale = ContentScale.Crop
-                    )
+                    Surface(
+                        onClick = { },
+                        scale = ClickableSurfaceDefaults.scale(focusedScale = 1.05f),
+                        shape = ClickableSurfaceDefaults.shape(RoundedCornerShape(12.dp)),
+                        border = ClickableSurfaceDefaults.border(
+                            border = Border(BorderStroke(2.dp, Color.Transparent)),
+                            focusedBorder = Border(BorderStroke(2.dp, Accent))
+                        ),
+                        colors = ClickableSurfaceDefaults.colors(
+                            containerColor = Color.Transparent,
+                            focusedContainerColor = Color.Transparent
+                        ),
+                        modifier = Modifier.focusRequester(thumbnailFocusRequester)
+                    ) {
+                        AsyncImage(
+                            model = imageRequest,
+                            contentDescription = null,
+                            modifier = Modifier.width(240.dp).aspectRatio(3f/4f),
+                            contentScale = ContentScale.Crop
+                        )
+                    }
                     Spacer(modifier = Modifier.width(24.dp))
                     Column(modifier = Modifier.weight(1f)) {
                         Text(text = detail.optString("bookName"), style = MaterialTheme.typography.headlineLarge, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface)
@@ -150,7 +180,7 @@ fun DramaDetailView(
                         focusedContainerColor = Color.White.copy(alpha = 0.1f)
                     ),
                     shape = ClickableSurfaceDefaults.shape(RoundedCornerShape(8.dp)),
-                    modifier = Modifier.focusRequester(headerFocusRequester)
+                    modifier = Modifier.focusRequester(episodesHeaderFocusRequester)
                 ) {
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
@@ -171,12 +201,55 @@ fun DramaDetailView(
                         )
                     }
                 }
+                if (episodesError != null) {
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text(
+                        text = episodesError,
+                        color = Accent,
+                        fontSize = 14.sp
+                    )
+                }
                 Spacer(modifier = Modifier.height(16.dp))
             }
 
             if (list.isEmpty()) {
                 item {
-                    Text("No episodes available or still loading...", color = TextSecondary, modifier = Modifier.padding(vertical = 20.dp))
+                    if (episodesError != null) {
+                        Column(
+                            modifier = Modifier.padding(vertical = 24.dp),
+                            verticalArrangement = Arrangement.spacedBy(16.dp)
+                        ) {
+                            Surface(
+                                onClick = onRefresh,
+                                scale = ClickableSurfaceDefaults.scale(focusedScale = 1.05f),
+                                colors = ClickableSurfaceDefaults.colors(
+                                    containerColor = Color.Transparent,
+                                    focusedContainerColor = Color.White.copy(alpha = 0.1f)
+                                ),
+                                shape = ClickableSurfaceDefaults.shape(RoundedCornerShape(8.dp))
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier.padding(8.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Refresh,
+                                        contentDescription = "Retry",
+                                        modifier = Modifier.size(24.dp),
+                                        tint = MaterialTheme.colorScheme.onSurface
+                                    )
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Text(
+                                        text = "Retry",
+                                        style = MaterialTheme.typography.titleMedium,
+                                        color = MaterialTheme.colorScheme.onSurface
+                                    )
+                                }
+                            }
+                        }
+                    } else {
+                        Text("No episodes available or still loading...", color = TextSecondary, modifier = Modifier.padding(vertical = 20.dp))
+                    }
                 }
             } else {
                 itemsIndexed(list) { index, ep ->
@@ -186,7 +259,7 @@ fun DramaDetailView(
                         detail = detail,
                         isWatched = isWatched,
                         onClick = onEpisodeClick,
-                        modifier = if (index == 0) Modifier.focusRequester(firstItemFocusRequester) else Modifier
+                        modifier = Modifier.focusRequester(episodeFocusRequesters[index])
                     )
                     Spacer(modifier = Modifier.height(12.dp))
                 }
@@ -207,7 +280,8 @@ fun DramaDetailView(
                 .align(Alignment.TopEnd)
                 .padding(24.dp)
                 .focusProperties {
-                    down = headerFocusRequester
+                    left = thumbnailFocusRequester
+                    down = episodesHeaderFocusRequester
                 },
             colors = IconButtonDefaults.colors(
                 containerColor = MaterialTheme.colorScheme.surface,
@@ -248,11 +322,17 @@ fun EpisodeItem(
     onClick: (JSONObject) -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val img = ep.optString("chapterImg").ifEmpty { 
-        detail.optString("coverWap").ifEmpty { 
-            detail.optString("coverUrl") 
-        } 
+    val img = ep.optString("chapterImg").ifEmpty {
+        ep.optString("videoPic").ifEmpty {
+            detail.optString("coverWap").ifEmpty {
+                detail.optString("coverUrl").ifEmpty {
+                    detail.optString("cover")
+                }
+            }
+        }
     }
+    val isLocked = ep.optBoolean("isLocked", false)
+    val episodeError = ep.optString("playbackError")
     
     val context = LocalContext.current
     val imageRequest = remember(img) {
@@ -277,12 +357,34 @@ fun EpisodeItem(
             verticalAlignment = Alignment.CenterVertically
         ) {
             Box {
-                AsyncImage(
-                    model = imageRequest,
-                    contentDescription = null,
-                    modifier = Modifier.width(140.dp).height(80.dp).clip(RoundedCornerShape(4.dp)),
-                    contentScale = ContentScale.Crop
-                )
+                if (img.isNotEmpty()) {
+                    AsyncImage(
+                        model = imageRequest,
+                        contentDescription = null,
+                        modifier = Modifier.width(140.dp).height(80.dp).clip(RoundedCornerShape(4.dp)),
+                        contentScale = ContentScale.Crop
+                    )
+                } else {
+                    Box(
+                        modifier = Modifier.width(140.dp).height(80.dp)
+                            .clip(RoundedCornerShape(4.dp))
+                            .background(MaterialTheme.colorScheme.surfaceVariant),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text("No preview", color = TextSecondary, fontSize = 12.sp)
+                    }
+                }
+                if (isLocked) {
+                    Surface(
+                        colors = SurfaceDefaults.colors(containerColor = Color.Black.copy(alpha = 0.7f)),
+                        shape = CircleShape,
+                        modifier = Modifier.align(Alignment.Center).size(32.dp)
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Text("🔒", fontSize = 14.sp)
+                        }
+                    }
+                }
                 if (isWatched) {
                     Surface(
                         colors = SurfaceDefaults.colors(containerColor = Color.Black.copy(alpha = 0.6f)),
@@ -298,15 +400,27 @@ fun EpisodeItem(
             Spacer(modifier = Modifier.width(16.dp))
             Column(modifier = Modifier.weight(1f)) {
                 val index = ep.optInt("chapterIndex")
+                val title = ep.optString("chapterName")
+                // Some providers already name the chapter "Episode N", the label
+                // would only repeat the same text.
+                val hasEpisodeLabel = !title.startsWith("Episode", ignoreCase = true)
                 Text(
-                    text = ep.optString("chapterName").ifEmpty { "EP ${index + 1}" },
+                    text = title.ifEmpty { "EP ${index + 1}" },
                     fontWeight = FontWeight.SemiBold,
                     fontSize = 16.sp,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                     color = if (isWatched) MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f) else MaterialTheme.colorScheme.onSurface
                 )
-                Text(text = "Episode ${index + 1}", color = TextSecondary, fontSize = 14.sp)
+                if (episodeError.isNotEmpty() || hasEpisodeLabel) {
+                    Text(
+                        text = if (episodeError.isNotEmpty()) episodeError else "Episode ${index + 1}",
+                        color = if (episodeError.isNotEmpty()) Accent else TextSecondary,
+                        fontSize = 14.sp,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
             }
             if (isWatched) {
                 Text("Watched", color = Accent, fontSize = 12.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(start = 8.dp))

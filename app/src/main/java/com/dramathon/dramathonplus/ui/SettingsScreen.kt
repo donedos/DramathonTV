@@ -1,6 +1,7 @@
 package com.dramathon.dramathonplus.ui
 
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
 import android.text.method.LinkMovementMethod
 import android.widget.TextView
@@ -25,6 +26,7 @@ import androidx.core.text.HtmlCompat
 import com.dramathon.dramathonplus.BuildConfig
 import com.dramathon.dramathonplus.DeviceIdManager
 import com.dramathon.dramathonplus.DramaViewModel
+import com.dramathon.dramathonplus.SubtitleLanguages
 import com.dramathon.dramathonplus.ui.theme.Accent
 import com.dramathon.dramathonplus.ui.theme.TextSecondary
 import kotlinx.coroutines.launch
@@ -37,6 +39,7 @@ fun SettingsScreen(viewModel: DramaViewModel) {
     val scope = rememberCoroutineScope()
     val subscriptionExpiry by viewModel.subscriptionExpiry.collectAsState()
     val isUnlocked by viewModel.isUnlocked.collectAsState()
+    val subtitleLanguage by viewModel.subtitleLanguage.collectAsState()
     
     val deviceId = remember(context) { DeviceIdManager.getStableId(context) }
 
@@ -94,6 +97,49 @@ fun SettingsScreen(viewModel: DramaViewModel) {
                         shape = ButtonDefaults.shape(RoundedCornerShape(12.dp))
                     ) {
                         Text("Enter Unlock Code", fontWeight = FontWeight.Bold)
+                    }
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(16.dp))
+
+        Surface(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(16.dp),
+            colors = SurfaceDefaults.colors(containerColor = MaterialTheme.colorScheme.surface),
+            border = Border(BorderStroke(1.dp, Color.Gray))
+        ) {
+            Column(modifier = Modifier.padding(16.dp)) {
+                Text(
+                    text = "Subtitle Language",
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 16.sp,
+                    color = Accent
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+                Text("Preferred Language: $subtitleLanguage", color = TextSecondary, fontSize = 14.sp)
+                Spacer(modifier = Modifier.height(12.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    SubtitleLanguages.options.forEach { option ->
+                        val isSelected = option == subtitleLanguage
+                        Button(
+                            onClick = { viewModel.setSubtitleLanguage(context, option) },
+                            colors = ButtonDefaults.colors(
+                                containerColor = if (isSelected) Accent else MaterialTheme.colorScheme.surfaceVariant,
+                                contentColor = if (isSelected) Color.White else MaterialTheme.colorScheme.onSurface
+                            ),
+                            shape = ButtonDefaults.shape(RoundedCornerShape(8.dp))
+                        ) {
+                            Text(
+                                text = option,
+                                fontSize = 13.sp,
+                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal
+                            )
+                        }
                     }
                 }
             }
@@ -236,18 +282,32 @@ fun SettingsScreen(viewModel: DramaViewModel) {
                             onClick = {
                                 showUpdateDialog = false
                                 val assets = updateInfo?.optJSONArray("assets")
-                                var downloadUrl = updateInfo?.optString("html_url") ?: ""
+                                val isTvApp = context.packageManager.hasSystemFeature(PackageManager.FEATURE_LEANBACK)
+                                val targetKeyword = if (isTvApp) "tv" else "plus"
+
+                                var matchedUrl: String? = null
+                                var fallbackUrl: String? = null
 
                                 if (assets != null) {
                                     for (i in 0 until assets.length()) {
                                         val asset = assets.getJSONObject(i)
                                         val name = asset.optString("name").lowercase()
                                         if (name.endsWith(".apk")) {
-                                            downloadUrl = asset.optString("browser_download_url")
-                                            break
+                                            if (fallbackUrl == null) {
+                                                fallbackUrl = asset.optString("browser_download_url")
+                                            }
+                                            if (name.contains(targetKeyword)) {
+                                                matchedUrl = asset.optString("browser_download_url")
+                                                break
+                                            }
                                         }
                                     }
                                 }
+
+                                val downloadUrl = matchedUrl 
+                                    ?: fallbackUrl 
+                                    ?: updateInfo?.optString("html_url") 
+                                    ?: ""
 
                                 val intent = Intent(Intent.ACTION_VIEW, Uri.parse(downloadUrl))
                                 context.startActivity(intent)

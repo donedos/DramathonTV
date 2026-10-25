@@ -5,7 +5,7 @@ import java.util.UUID
 object DeviceHeaders {
     var deviceId: String = UUID.randomUUID().toString()
     var androidId: String = randomAndroidId()
-    var tn: String = "Bearer ZXlKMGVYQWlPaUpLVjFRaUxDSmhiR2NpT2lKSVV6STFOaUo5LmV5SnlaV2RwYzNSbGNsUjVjR1VpT2lKVVJVMVFJaXdpZFhObGNrbGtJam8xTkRJMU9URTNPVEY5LkZrNUhwejNsbFZRcXkxVmRrWEZ1OUF3bGRPZkl4Vnc0dVM1VWNHeTY2aEk="
+    var tn: String = ""
 
     private fun randomAndroidId(): String {
         val bytes = ByteArray(8)
@@ -34,7 +34,7 @@ object DeviceHeaders {
             "language" to "en",
             "mcc" to "510",
             "locale" to "en_ID",
-            "is_root" to "0",
+            "is_root" to if (SecurityUtils.isRooted()) "1" else "0",
             "device-id" to deviceId,
             "nchid" to "DRA1000042",
             "md" to "SM-A042F",
@@ -45,7 +45,7 @@ object DeviceHeaders {
             "time-zone" to "+0800",
             "brand" to "samsung",
             "lat" to "0",
-            "is_emulator" to "0",
+            "is_emulator" to if (SecurityUtils.isEmulator()) "1" else "0",
             "current-language" to "en",
             "ov" to "13",
             "userid" to "292895731",

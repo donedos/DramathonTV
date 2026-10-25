@@ -15,13 +15,17 @@ android {
         minSdk = 26
         targetSdk = 37
         versionCode = 1
-        versionName = "1.4.5"
+        versionName = "1.6.6"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
     buildTypes {
+        debug {
+            buildConfigField("boolean", "SCREEN_CAPTURE_PROTECTED", "false")
+        }
         release {
+            buildConfigField("boolean", "SCREEN_CAPTURE_PROTECTED", "true")
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(
@@ -69,10 +73,10 @@ dependencies {
     implementation(libs.okhttp.logging)
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.androidx.media3.exoplayer)
+    implementation(libs.androidx.media3.datasource.okhttp)
     implementation(libs.androidx.media3.exoplayer.hls)
     implementation(libs.androidx.media3.session)
     implementation(libs.androidx.media3.ui)
-    implementation(libs.nanohttpd)
     implementation(libs.coil.compose)
 
     implementation(platform(libs.firebase.bom))

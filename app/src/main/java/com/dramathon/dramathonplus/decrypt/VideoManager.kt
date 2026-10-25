@@ -31,8 +31,18 @@ object VideoManager {
                 Log.e(TAG, "Download failed: ${response.code}")
                 return@withContext null
             }
+
+            val contentType = response.header("Content-Type") ?: ""
+            if (contentType.contains("mpegurl") || contentType.contains("dash+xml") || contentType.contains("m3u8")) {
+                Log.w(TAG, "Streaming playlist detected ($contentType), it must be played as HLS, not downloaded.")
+                return@withContext null
+            }
             
             val data = response.body?.bytes() ?: return@withContext null
+            if (data.isNotEmpty() && String(data, 0, minOf(7, data.size)).startsWith("#EXTM3U")) {
+                Log.w(TAG, "Response is an HLS playlist, it must be played as HLS, not downloaded.")
+                return@withContext null
+            }
             Log.d(TAG, "Downloaded ${data.size / 1024 / 1024} MB")
 
             val b64 = Mp4Parser.extractAliyunUri(data)

@@ -15,6 +15,7 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
@@ -85,9 +86,13 @@ fun MainContent(viewModel: DramaViewModel) {
     val liveStatus by viewModel.liveStatus.collectAsState()
     val isVersionKilled by viewModel.isVersionKilled.collectAsState()
     val isEndReached by viewModel.isEndReached.collectAsState()
+    val episodesError by viewModel.episodesError.collectAsState()
 
     var searchText by remember { mutableStateOf("") }
     var lastPlayedIndex by remember { mutableIntStateOf(-1) }
+    
+    val gridState = rememberLazyGridState()
+    var lastSelectedDramaIndex by remember { mutableIntStateOf(-1) }
 
     val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
 
@@ -190,6 +195,8 @@ fun MainContent(viewModel: DramaViewModel) {
                         onClick = {
                             scope.launch {
                                 searchText = ""
+                                lastSelectedDramaIndex = -1
+                                gridState.scrollToItem(0)
                                 viewModel.loadTab(tab.key)
                             }
                         },
@@ -315,6 +322,7 @@ fun MainContent(viewModel: DramaViewModel) {
                                     isUnlocked = isUnlocked,
                                     initialScrollIndex = lastPlayedIndex,
                                     isFavorite = favorites.containsKey(bookId),
+                                    episodesError = episodesError,
                                     onEpisodeClick = { ep ->
                                         viewModel.setPlayingEpisode(ep)
                                     },
@@ -340,12 +348,15 @@ fun MainContent(viewModel: DramaViewModel) {
                             } else {
                                 DramaGrid(
                                     dramas = dramas,
-                                    onDramaClick = { drama ->
+                                    onDramaClick = { drama, index ->
+                                        lastSelectedDramaIndex = index
                                         scope.launch { viewModel.selectDrama(drama) }
                                     },
                                     onLoadMore = { viewModel.loadMore() },
                                     isLoading = loading,
-                                    isEndReached = isEndReached
+                                    isEndReached = isEndReached,
+                                    gridState = gridState,
+                                    initialFocusIndex = lastSelectedDramaIndex
                                 )
                             }
                         }

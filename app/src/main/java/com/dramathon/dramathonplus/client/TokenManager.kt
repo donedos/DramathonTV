@@ -1,6 +1,7 @@
 package com.dramathon.dramathonplus.client
 
 import android.util.Log
+import com.dramathon.dramathonplus.network.HttpClients
 import com.dramathon.dramathonplus.sign.DeviceHeaders
 import com.dramathon.dramathonplus.sign.Signer
 import kotlinx.coroutines.Dispatchers
@@ -10,19 +11,24 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONObject
-import java.util.concurrent.TimeUnit
 
 object TokenManager {
     private const val TAG = "TokenManager"
-    
-    private val client = OkHttpClient.Builder()
-        .connectTimeout(60, TimeUnit.SECONDS)
-        .readTimeout(60, TimeUnit.SECONDS)
-        .build()
+
+    private var client: OkHttpClient? = null
+
+    fun install(shared: OkHttpClient) {
+        client = shared
+    }
+
+    private fun getClient(): OkHttpClient {
+        return client ?: HttpClients.get().also { client = it }
+    }
 
     private const val BASE_URL = "https://sapi.dramaboxdb.com"
 
     suspend fun bootstrap(): String? = withContext(Dispatchers.IO) {
+        val http = getClient()
         val payload = JSONObject()
         val timestamp = System.currentTimeMillis()
         val deviceId = DeviceHeaders.deviceId
@@ -53,11 +59,10 @@ object TokenManager {
             .build()
 
         return@withContext try {
-            client.newCall(request).execute().use { response ->
+            http.newCall(request).execute().use { response ->
                 val bodyBytes = response.body?.bytes()
                 val body = bodyBytes?.let { String(it) }
                 Log.d(TAG, "Bootstrap response code: ${response.code}")
-                Log.d(TAG, "Bootstrap response headers: ${response.headers}")
                 
                 if (response.isSuccessful) {
                     val json = JSONObject(body ?: "{}")
@@ -68,7 +73,7 @@ object TokenManager {
                             Log.i(TAG, "Successfully bootstrapped new token")
                             newToken
                         } else {
-                            Log.e(TAG, "No token in bootstrap response: $body")
+                            Log.e(TAG, "No token in bootstrap response")
                             null
                         }
                     } else {
@@ -76,7 +81,7 @@ object TokenManager {
                         null
                     }
                 } else {
-                    Log.e(TAG, "Bootstrap HTTP error: ${response.code} body: $body")
+                    Log.e(TAG, "Bootstrap HTTP error: ${response.code}")
                     null
                 }
             }

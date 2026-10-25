@@ -41,13 +41,16 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
+import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
+import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.session.MediaController
 import androidx.media3.session.SessionToken
 import androidx.media3.ui.PlayerView
 import com.dramathon.dramathonplus.PlaybackService
+import com.dramathon.dramathonplus.SubtitleLanguages
 import com.dramathon.dramathonplus.decrypt.VideoManager
 import com.dramathon.dramathonplus.ui.theme.Accent
 import com.dramathon.dramathonplus.ui.theme.Bg2
@@ -56,6 +59,9 @@ import com.google.common.util.concurrent.MoreExecutors
 import kotlinx.coroutines.delay
 import org.json.JSONObject
 
+@androidx.annotation.OptIn(
+    markerClass = [androidx.media3.common.util.UnstableApi::class]
+)
 @OptIn(ExperimentalTvMaterial3Api::class)
 @Composable
 fun VideoPlayer(
@@ -82,9 +88,35 @@ fun VideoPlayer(
     var currentPosition by remember { mutableLongStateOf(0L) }
     var duration by remember { mutableLongStateOf(0L) }
     var isEpisodeLoading by remember { mutableStateOf(false) }
+    var playbackError by remember { mutableStateOf<String?>(null) }
+    var currentMediaId by remember { mutableStateOf<String?>(null) }
 
     var controllerFuture by remember { mutableStateOf<ListenableFuture<MediaController>?>(null) }
     var mediaController by remember { mutableStateOf<MediaController?>(null) }
+    var selectedSubtitleLanguage by remember { mutableStateOf("English") }
+
+    LaunchedEffect(Unit) {
+        val prefs = context.getSharedPreferences("drama_prefs", android.content.Context.MODE_PRIVATE)
+        selectedSubtitleLanguage = prefs.getString("subtitle_lang", "English") ?: "English"
+    }
+
+    LaunchedEffect(selectedSubtitleLanguage, mediaController) {
+        val controller = mediaController ?: return@LaunchedEffect
+        if (SubtitleLanguages.isDisabled(selectedSubtitleLanguage)) {
+            val params = controller.trackSelectionParameters.buildUpon()
+                .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
+                .build()
+            controller.trackSelectionParameters = params
+        } else {
+            val langCode = SubtitleLanguages.languageCode(selectedSubtitleLanguage)
+            val builder = controller.trackSelectionParameters.buildUpon()
+                .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
+            if (langCode != null) {
+                builder.setPreferredTextLanguage(langCode)
+            }
+            controller.trackSelectionParameters = builder.build()
+        }
+    }
 
     val currentEpisodeState = rememberUpdatedState(episode)
     val episodesState = rememberUpdatedState(episodes)
@@ -109,11 +141,25 @@ fun VideoPlayer(
                             
                             val currentItem = player.currentMediaItem
                             val uri = currentItem?.localConfiguration?.uri?.toString() ?: ""
+                            currentMediaId = currentItem?.mediaId
                             Log.d("VideoPlayer", "onEvents: URI=$uri, state=${player.playbackState}")
-                            isEpisodeLoading = uri.startsWith("https://dramathonplus.com/ep_") || 
-                                             player.playbackState == Player.STATE_BUFFERING ||
-                                             (player.playbackState == Player.STATE_IDLE && uri.isNotEmpty())
+                            isEpisodeLoading = (uri.startsWith(PlaybackService.DUMMY_PREFIX) || 
+                                             player.playbackState == Player.STATE_BUFFERING||
+                                             (player.playbackState == Player.STATE_IDLE && uri.isNotEmpty())) &&
+                                             playbackError == null
                         }
+                    }
+
+                    override fun onPlayerError(error: PlaybackException) {
+                        val uri = controller.currentMediaItem?.localConfiguration?.uri?.toString() ?: ""
+                        if (uri.startsWith(PlaybackService.DUMMY_PREFIX)) {
+                            // The placeholder URI is expected to fail, the service
+                            // replaces it with the real stream once it is resolved.
+                            return
+                        }
+                        Log.e("VideoPlayer", "Playback error: ${error.errorCodeName}", error)
+                        isEpisodeLoading = false
+                        playbackError = "This episode could not be played. Please try again."
                     }
 
                     override fun onPlaybackStateChanged(state: Int) {
@@ -142,7 +188,11 @@ fun VideoPlayer(
                     }
 
                     override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
-                        isEpisodeLoading = mediaItem?.localConfiguration?.uri?.toString()?.startsWith("https://dramathonplus.com/ep_") == true
+                        isEpisodeLoading = mediaItem?.localConfiguration?.uri?.toString()?.startsWith(PlaybackService.DUMMY_PREFIX) == true
+                        if (mediaItem?.mediaId != currentMediaId) {
+                            playbackError = null
+                        }
+                        currentMediaId = mediaItem?.mediaId
 
                         if (reason == Player.MEDIA_ITEM_TRANSITION_REASON_SEEK || 
                             reason == Player.MEDIA_ITEM_TRANSITION_REASON_AUTO) {
@@ -181,7 +231,10 @@ fun VideoPlayer(
         val items = episodes.map { ep ->
             val bundle = Bundle().apply {
                 putString("real_url", ep.optString("videoPath"))
+                // Alternative renditions, tried in order when the preferred one fails.
+                putString("real_urls", fallbackUrls(ep).joinToString("\n"))
                 putBoolean("is_unlocked", isUnlocked)
+                putBoolean("is_locked", ep.optBoolean("isLocked", false))
                 putInt("chapter_index", ep.optInt("chapterIndex"))
             }
 
@@ -190,10 +243,15 @@ fun VideoPlayer(
                 .setArtist("DramaThon Plus")
                 .setExtras(bundle)
                 .build()
+
+            val subList = ep.optJSONArray("subLanguageVoList")
+            val subtitleConfigs = SubtitleLanguages.buildSubtitleConfigurations(subList)
+
             MediaItem.Builder()
                 .setMediaId(ep.optLong("chapterId").toString())
                 .setMediaMetadata(metadata)
-                .setUri("https://dramathonplus.com/ep_${ep.optInt("chapterIndex")}")
+                .setUri("${PlaybackService.DUMMY_PREFIX}${ep.optInt("chapterIndex")}")
+                .setSubtitleConfigurations(subtitleConfigs)
                 .build()
         }
 
@@ -210,8 +268,11 @@ fun VideoPlayer(
             for (i in 0 until controller.mediaItemCount) {
                 val existingItem = controller.getMediaItemAt(i)
                 val newItem = items[i]
-                // Preserve the local URI if it's already been decrypted
-                val finalItem = if (existingItem.localConfiguration?.uri?.toString()?.startsWith("file://") == true) {
+                // Preserve the resolved URI (decrypted local file or HLS stream) if already prepared
+                val existingUri = existingItem.localConfiguration?.uri?.toString() ?: ""
+                val alreadyPrepared = existingUri.isNotEmpty() &&
+                    !existingUri.startsWith(PlaybackService.DUMMY_PREFIX)
+                val finalItem = if (alreadyPrepared) {
                     newItem.buildUpon().setUri(existingItem.localConfiguration?.uri).build()
                 } else {
                     newItem
@@ -222,6 +283,30 @@ fun VideoPlayer(
     }
 
     // Decryption is handled by PlaybackService via the dummy URI and metadata extras.
+    LaunchedEffect(mediaController) {
+        val controller = mediaController ?: return@LaunchedEffect
+        while (true) {
+            val extras = controller.sessionExtras
+            val message = extras.getString(PlaybackService.EXTRA_ERROR)
+            val failedItem = extras.getString(PlaybackService.EXTRA_ERROR_ITEM)
+            if (!message.isNullOrEmpty() && (failedItem == null || failedItem == currentMediaId)) {
+                val needsUnlock = message.contains("premium", ignoreCase = true) ||
+                    message.contains("locked", ignoreCase = true)
+                if (needsUnlock) {
+                    showUnlockDialog = true
+                } else {
+                    playbackError = message
+                }
+                isEpisodeLoading = false
+            }
+            delay(400)
+        }
+    }
+
+    // The view model already knows when an episode cannot be played at all.
+    val episodeError = remember(episode) { episode.optString("playbackError").ifEmpty { null } }
+    val shownError = playbackError ?: episodeError
+
     LaunchedEffect(episode, mediaController) {
         val controller = mediaController ?: return@LaunchedEffect
         val expectedIndex = episodes.indexOfFirst { it.optInt("chapterIndex") == episode.optInt("chapterIndex") }
@@ -310,24 +395,55 @@ fun VideoPlayer(
     ) {
         AndroidView(
             modifier = Modifier.fillMaxSize(),
-            factory = {
-                PlayerView(it).apply {
+            factory = { context ->
+                PlayerView(context).apply {
                     player = mediaController
                     useController = false
                     keepScreenOn = true
+                    SubtitleLanguages.applySubtitleStyle(this)
                 }
             },
             update = {
                 it.player = mediaController
+                SubtitleLanguages.applySubtitleStyle(it)
             }
         )
 
-        if (isEpisodeLoading) {
+        if (isEpisodeLoading && shownError == null) {
             Box(
                 modifier = Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.5f)),
                 contentAlignment = Alignment.Center
             ) {
                 CustomProgressIndicator()
+            }
+        }
+
+        if (shownError != null) {
+            Box(
+                modifier = Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.75f)),
+                contentAlignment = Alignment.Center
+            ) {
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Text(
+                        text = "Episode unavailable",
+                        color = Color.White,
+                        fontSize = 20.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Text(
+                        text = shownError,
+                        color = Color.White.copy(alpha = 0.8f),
+                        fontSize = 16.sp
+                    )
+                    Text(
+                        text = "Press BACK to go back to the episode list",
+                        color = Color.White.copy(alpha = 0.6f),
+                        fontSize = 14.sp
+                    )
+                }
             }
         }
         
@@ -556,4 +672,27 @@ private fun formatTime(ms: Long): String {
     val minutes = totalSeconds / 60
     val seconds = totalSeconds % 60
     return "%02d:%02d".format(minutes, seconds)
+}
+
+/**
+ * Alternative stream URLs of an episode, best first. The playback service walks
+ * through them when the preferred rendition cannot be loaded.
+ */
+private fun fallbackUrls(ep: JSONObject): List<String> {
+    val urls = LinkedHashSet<String>()
+    val candidates = ep.optJSONArray("videoPaths")
+    if (candidates != null) {
+        for (i in 0 until candidates.length()) {
+            candidates.optString(i).takeIf { it.isNotBlank() }?.let { urls.add(it) }
+        }
+    }
+    if (urls.isEmpty()) {
+        val all = ep.optJSONArray("allVideoPaths")
+        if (all != null) {
+            for (i in 0 until all.length()) {
+                all.optJSONObject(i)?.optString("videoPath")?.takeIf { it.isNotBlank() }?.let { urls.add(it) }
+            }
+        }
+    }
+    return urls.toList()
 }

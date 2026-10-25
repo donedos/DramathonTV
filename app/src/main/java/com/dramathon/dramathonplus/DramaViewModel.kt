@@ -7,14 +7,22 @@ import com.dramathon.dramathonplus.client.CacheManager
 import com.dramathon.dramathonplus.client.DramaBoxApi
 import com.dramathon.dramathonplus.client.DramaCategories
 import com.dramathon.dramathonplus.client.EpisodeFetcher
+import com.dramathon.dramathonplus.client.NativeReelShortSecretProvider
+import com.dramathon.dramathonplus.client.ReelShortApi
+import com.dramathon.dramathonplus.client.ReelShortClient
+import com.dramathon.dramathonplus.client.ReelShortSession
 import com.google.firebase.database.DataSnapshot
 import com.google.firebase.database.DatabaseError
 import com.google.firebase.database.DatabaseReference
 import com.google.firebase.database.FirebaseDatabase
 import com.google.firebase.database.ValueEventListener
+import com.dramathon.dramathonplus.network.HttpClients
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withContext
@@ -51,7 +59,14 @@ object DeviceIdManager {
 }
 
 class DramaViewModel : ViewModel() {
-    private val client = OkHttpClient()
+    private companion object {
+        const val TAG = "DramaViewModel"
+    }
+
+    private val client = HttpClients.get()
+    private val reelShortSession = ReelShortSession(NativeReelShortSecretProvider())
+    private val reelShortClient = ReelShortClient(client, reelShortSession)
+    private val reelShortApi = ReelShortApi(reelShortSession, reelShortClient)
     private val RTDB_URL = "https://dramathonkey-default-rtdb.asia-southeast1.firebasedatabase.app/"
 
     private val _dramas = MutableStateFlow<JSONArray>(JSONArray())
@@ -99,6 +114,9 @@ class DramaViewModel : ViewModel() {
     private val _subscriptionExpiry = MutableStateFlow<String?>(null)
     val subscriptionExpiry: StateFlow<String?> = _subscriptionExpiry
 
+    private val _subtitleLanguage = MutableStateFlow("English")
+    val subtitleLanguage: StateFlow<String> = _subtitleLanguage.asStateFlow()
+
     private val _globalUserCount = MutableStateFlow(0)
     val globalUserCount: StateFlow<Int> = _globalUserCount
 
@@ -107,6 +125,11 @@ class DramaViewModel : ViewModel() {
 
     private val _isVersionKilled = MutableStateFlow(false)
     val isVersionKilled: StateFlow<Boolean> = _isVersionKilled
+
+    private val _reelShortError = MutableStateFlow<String?>(null)
+    val reelShortError: StateFlow<String?> = _reelShortError
+    private val _episodesError = MutableStateFlow<String?>(null)
+    val episodesError: StateFlow<String?> = _episodesError
 
     var currentPage = 1
         private set
@@ -137,6 +160,7 @@ class DramaViewModel : ViewModel() {
 
         val prefs = context.getSharedPreferences("drama_prefs", Context.MODE_PRIVATE)
         _isDarkMode.value = prefs.getBoolean("is_dark_mode", true)
+        _subtitleLanguage.value = prefs.getString("subtitle_lang", "English") ?: "English"
         
         val isUnlocked = prefs.getBoolean("is_unlocked", false)
         
@@ -151,6 +175,12 @@ class DramaViewModel : ViewModel() {
         } else {
             _isUnlocked.value = false
         }
+    }
+
+    fun setSubtitleLanguage(context: Context, language: String) {
+        _subtitleLanguage.value = language
+        val prefs = context.getSharedPreferences("drama_prefs", Context.MODE_PRIVATE)
+        prefs.edit().putString("subtitle_lang", language).apply()
     }
 
     private fun startListening(code: String, deviceId: String, context: Context) {
@@ -271,31 +301,55 @@ class DramaViewModel : ViewModel() {
         })
     }
 
+    private fun isVersionAtLeast(version: String, target: String): Boolean {
+        try {
+            val vParts = version.split("-")[0].split(".").mapNotNull { it.toIntOrNull() }
+            val tParts = target.split("-")[0].split(".").mapNotNull { it.toIntOrNull() }
+            val maxLen = maxOf(vParts.size, tParts.size)
+            for (i in 0 until maxLen) {
+                val v = vParts.getOrElse(i) { 0 }
+                val t = tParts.getOrElse(i) { 0 }
+                if (v > t) return true
+                if (v < t) return false
+            }
+            return true
+        } catch (_: Exception) {
+            return false
+        }
+    }
+
     private fun monitorLiveStatus() {
         val db = FirebaseDatabase.getInstance(RTDB_URL)
-        
-        // Listen to global live switch
-        db.getReference("live").addValueEventListener(object : ValueEventListener {
-            override fun onDataChange(snapshot: DataSnapshot) {
-                if (snapshot.exists()) {
-                    val value = snapshot.value
-                    _liveStatus.value = when (value) {
-                        is Boolean -> value
-                        is String -> value.toBoolean()
-                        is Long -> value == 1L
-                        else -> true
-                    }
-                } else {
-                    _liveStatus.value = true
-                }
-            }
-            override fun onCancelled(error: DatabaseError) {
-                Log.e("RTDB", "Failed to monitor live status: ${error.message}")
-            }
-        })
+        val currentVersion = BuildConfig.VERSION_NAME
 
-        // Listen to version-specific kill switches
-        db.getReference("killed_versions").child(BuildConfig.VERSION_NAME.replace(".", "_"))
+        // Versions 1.6.1 onwards no longer use global "live" boolean; controlled solely by "killed_versions"
+        if (!isVersionAtLeast(currentVersion, "1.6.1")) {
+            // Legacy versions (< 1.6.1): Listen to global "live" switch
+            db.getReference("live").addValueEventListener(object : ValueEventListener {
+                override fun onDataChange(snapshot: DataSnapshot) {
+                    if (snapshot.exists()) {
+                        val value = snapshot.value
+                        _liveStatus.value = when (value) {
+                            is Boolean -> value
+                            is String -> value.toBoolean()
+                            is Long -> value == 1L
+                            else -> true
+                        }
+                    } else {
+                        _liveStatus.value = true
+                    }
+                }
+                override fun onCancelled(error: DatabaseError) {
+                    Log.e("RTDB", "Failed to monitor live status: ${error.message}")
+                }
+            })
+        } else {
+            // Version 1.6.1+: Always live (legacy "live" boolean ignored)
+            _liveStatus.value = true
+        }
+
+        // Listen to version-specific kill switches (killed_versions/<version_key>)
+        db.getReference("killed_versions").child(currentVersion.replace(".", "_"))
             .addValueEventListener(object : ValueEventListener {
                 override fun onDataChange(snapshot: DataSnapshot) {
                     if (snapshot.exists()) {
@@ -545,7 +599,7 @@ class DramaViewModel : ViewModel() {
         val filtered = JSONArray()
         for (i in 0 until arr.length()) {
             val drama = arr.optJSONObject(i) ?: continue
-            val name = drama.optString("bookName")
+            val name = drama.optString("bookName").ifEmpty { drama.optString("title") }
             val cover = drama.optString("cover").ifEmpty { 
                 drama.optString("coverUrl").ifEmpty { 
                     drama.optString("coverWap") 
@@ -553,10 +607,94 @@ class DramaViewModel : ViewModel() {
             }
             // Only include if it has a name and a cover image
             if (name.isNotEmpty() && cover.isNotEmpty()) {
+                if (!drama.has("bookName") && drama.has("title")) {
+                    drama.put("bookName", drama.getString("title"))
+                }
+                if (!drama.has("chapterCount") && drama.has("totalEpisodes")) {
+                    drama.put("chapterCount", drama.getInt("totalEpisodes"))
+                }
                 filtered.put(drama)
             }
         }
         return filtered
+    }
+
+    private fun collectReelShortBooks(data: JSONObject): List<JSONObject> {
+        val out = mutableListOf<JSONObject>()
+        val seen = mutableSetOf<String>()
+        fun walk(obj: JSONObject) {
+            val keys = obj.keys()
+            while (keys.hasNext()) {
+                val value = obj.get(keys.next())
+                when (value) {
+                    is JSONArray -> {
+                        for (i in 0 until value.length()) {
+                            val item = value.optJSONObject(i) ?: continue
+                            val id = item.optString("book_id").ifEmpty {
+                                item.optString("bookId").ifEmpty { item.optString("t_book_id") }
+                            }
+                            if (id.isNotEmpty()) {
+                                if (seen.add(id)) out.add(item)
+                            } else {
+                                walk(item)
+                            }
+                        }
+                    }
+                    is JSONObject -> walk(value)
+                }
+            }
+        }
+        walk(data)
+        return out
+    }
+
+    private fun applyReelShortVideoPaths(ep: JSONObject, videoList: JSONArray) {
+        val allPaths = JSONArray()
+        for (j in 0 until videoList.length()) {
+            val v = videoList.getJSONObject(j)
+            val url = v.optString("url")
+            if (url.isEmpty()) continue
+            allPaths.put(JSONObject().apply {
+                put("videoPath", url)
+                put("quality", v.optInt("quality"))
+                put("encode", v.optString("encode"))
+            })
+        }
+        val best = pickBestRendition(allPaths)
+        ep.put("allVideoPaths", allPaths)
+        ep.put("videoPath", best?.optString("videoPath") ?: "")
+        // Fallback candidates, best first: if the preferred rendition fails to load
+        // the player retries with the next one instead of showing an endless spinner.
+        ep.put("videoPaths", JSONArray(renditionFallbacks(allPaths, best)))
+    }
+
+    /**
+     * Builds the ordered list of alternative stream URLs for an episode.
+     * H.264 renditions come first (HEVC clips stall on many devices), then the
+     * remaining renditions by descending quality.
+     */
+    private fun renditionFallbacks(allPaths: JSONArray, best: JSONObject?): List<String> {
+        val paths = (0 until allPaths.length()).map { allPaths.getJSONObject(it) }
+        val ordered = paths.sortedWith(
+            compareByDescending<JSONObject> { it.optString("encode").contains("H264", ignoreCase = true) }
+                .thenByDescending { it.optInt("quality") }
+        )
+        val urls = LinkedHashSet<String>()
+        best?.optString("videoPath")?.takeIf { it.isNotEmpty() }?.let { urls.add(it) }
+        ordered.forEach { urls.add(it.optString("videoPath")) }
+        return urls.filter { it.isNotEmpty() }
+    }
+
+    /**
+     * ReelShort serves every clip twice, as H.265 and as H.264. The H.265 renditions
+     * hang on devices whose HEVC decoder is unreliable, so H.264 is used whenever it
+     * is offered; only the highest quality rendition of that codec is picked.
+     */
+    private fun pickBestRendition(allPaths: JSONArray): JSONObject? {
+        val paths = (0 until allPaths.length()).map { allPaths.getJSONObject(it) }
+        val avc = paths.filter { it.optString("encode").contains("H264", ignoreCase = true) }
+        return avc.maxByOrNull { it.optInt("quality") }
+            ?: paths.maxByOrNull { it.optInt("quality") }
     }
 
     suspend fun loadTab(tab: String, forceRefresh: Boolean = false) {
@@ -588,97 +726,197 @@ class DramaViewModel : ViewModel() {
 
         if (!forceRefresh) {
             val cached = CacheManager.get("tab_$tab") as? JSONArray
-            if (cached != null) {
+            // An empty cached array only means the previous fetch failed. Serving it
+            // would pin the tab to "No dramas found" for the whole TTL and never
+            // trigger another request, so only a non-empty cache is a valid hit.
+            if (cached != null && cached.length() > 0) {
                 _dramas.value = cached
                 return
+            }
+            if (cached != null) {
+                Log.w(TAG, "Ignoring empty cache for tab '$tab', refetching")
             }
         }
 
         _loading.value = true
         try {
-            val res = when (tab) {
-                "explore" -> DramaBoxApi.latest()
-                "vip" -> DramaBoxApi.vip()
-                else -> DramaBoxApi.latest()
-            }
-            
-            val data = res.optJSONObject("data")
-            val list = JSONArray()
-            val seenIds = mutableSetOf<Long>()
-            
-            if (data != null) {
-                val keys = listOf("rankList", "recommendList", "classifyBookList", "newTheaterList")
-                keys.forEach { key ->
-                    val arr = when (key) {
-                        "rankList" -> data.optJSONArray(key)
-                        else -> data.optJSONObject(key)?.optJSONArray("records")
+            coroutineScope {
+                val dbDeferred = async {
+                    try {
+                        when (tab) {
+                            "explore" -> DramaBoxApi.latest()
+                            "vip" -> DramaBoxApi.vip()
+                            else -> DramaBoxApi.latest()
+                        }
+                    } catch (e: Exception) {
+                        Log.e(TAG, "DramaBox request failed for tab '$tab'", e)
+                        null
                     }
-                    
-                    if (arr != null) {
-                        for (i in 0 until arr.length()) {
-                            val drama = arr.optJSONObject(i) ?: continue
-                            val id = drama.optLong("bookId")
-                            if (id != 0L && seenIds.add(id)) {
-                                list.put(drama)
+                }
+
+                val rsDeferred = async {
+                    try {
+                        if (tab != "settings" && tab != "myfavorite" && tab != "more") {
+                            reelShortApi.homepage().also {
+                                if (it.optBoolean("success", false)) _reelShortError.value = null
+                            }
+                        } else null
+                    } catch (e: Exception) {
+                        Log.e(TAG, "ReelShort homepage failed for tab '$tab'", e)
+                        _reelShortError.value = "ReelShort is temporarily unavailable"
+                        null
+                    }
+                }
+
+                val res = dbDeferred.await()
+
+                val list = JSONArray()
+                val seenIds = mutableSetOf<Long>()
+
+                if (res != null) {
+                    val data = res.optJSONObject("data")
+                    if (data != null) {
+                        val keys = listOf("rankList", "recommendList", "classifyBookList", "newTheaterList")
+                        keys.forEach { key ->
+                            val arr = when (key) {
+                                "rankList" -> data.optJSONArray(key)
+                                else -> data.optJSONObject(key)?.optJSONArray("records")
+                            }
+                            
+                            if (arr != null) {
+                                for (i in 0 until arr.length()) {
+                                    val drama = arr.optJSONObject(i) ?: continue
+                                    val id = drama.optLong("bookId")
+                                    if (id != 0L && seenIds.add(id)) {
+                                        list.put(drama)
+                                    }
+                                }
+                            }
+                        }
+                        
+                        if (list.length() == 0) {
+                            val recommendRecords = data.optJSONObject("recommendList")?.optJSONArray("records")
+                            if (recommendRecords != null) {
+                                for (i in 0 until recommendRecords.length()) {
+                                    val drama = recommendRecords.optJSONObject(i) ?: continue
+                                    val id = drama.optLong("bookId")
+                                    if (id != 0L && seenIds.add(id)) list.put(drama)
+                                }
                             }
                         }
                     }
                 }
-                
-                if (list.length() == 0) {
-                    val recommendRecords = data.optJSONObject("recommendList")?.optJSONArray("records")
-                    if (recommendRecords != null) {
-                        for (i in 0 until recommendRecords.length()) {
-                            val drama = recommendRecords.optJSONObject(i) ?: continue
-                            val id = drama.optLong("bookId")
-                            if (id != 0L && seenIds.add(id)) list.put(drama)
+
+                if (list.length() < 50) {
+                    try {
+                        val supRes = DramaBoxApi.foryou()
+                        val supData = supRes.optJSONObject("data")
+                        val supRecs = supData?.optJSONObject("recommendList")?.optJSONArray("records")
+                        if (supRecs != null) {
+                            for (i in 0 until supRecs.length()) {
+                                val drama = supRecs.optJSONObject(i) ?: continue
+                                val id = drama.optLong("bookId")
+                                if (id != 0L && seenIds.add(id)) list.put(drama)
+                            }
+                        }
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Supplemental 'for you' fetch failed for tab '$tab'", e)
+                    }
+                }
+
+                if (list.length() < 50) {
+                    try {
+                        val rndRes = DramaBoxApi.randomDrama()
+                        val rndData = rndRes.optJSONObject("data")
+                        val rndRecs = rndData?.optJSONArray("recommendList")
+                        if (rndRecs != null) {
+                            for (i in 0 until rndRecs.length()) {
+                                val drama = rndRecs.optJSONObject(i) ?: continue
+                                val id = drama.optLong("bookId")
+                                if (id != 0L && seenIds.add(id)) list.put(drama)
+                            }
+                        }
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Supplemental random-drama fetch failed for tab '$tab'", e)
+                    }
+                }
+
+                var sanitized = sanitizeDramas(list)
+                // Never cache an empty result: an empty cached array is treated as a
+                // valid cache hit on the next launch and would blank the tab for
+                // the whole TTL. Keep whatever the user is already looking at.
+                if (sanitized.length() > 0) {
+                    _dramas.value = sanitized
+                    CacheManager.put("tab_$tab", sanitized)
+                } else {
+                    Log.w(TAG, "Empty result for tab '$tab', not caching")
+                    if (_dramas.value.length() == 0) {
+                        val cached = CacheManager.get("tab_$tab") as? JSONArray
+                        if (cached != null && cached.length() > 0) {
+                            _dramas.value = cached
                         }
                     }
                 }
-            }
+                // The ReelShort leg can take tens of seconds (native TLS + secrets fetch),
+                // so publish the DramaBox results and drop the spinner before awaiting it.
+                _loading.value = false
 
-            // Improve density by merging with foryou and randomDrama if initial results are low
-            if (list.length() < 50) {
-                try {
-                    val supRes = DramaBoxApi.foryou()
-                    val supData = supRes.optJSONObject("data")
-                    val supRecs = supData?.optJSONObject("recommendList")?.optJSONArray("records")
-                    if (supRecs != null) {
-                        for (i in 0 until supRecs.length()) {
-                            val drama = supRecs.optJSONObject(i) ?: continue
+                val rsRes = rsDeferred.await()
+                if (rsRes != null && rsRes.optBoolean("success", false)) {
+                    val data = rsRes.optJSONObject("data")
+                    if (data != null) {
+                        val current = _dramas.value
+                        val merged = JSONArray()
+                        val mergedIds = mutableSetOf<Long>()
+                        for (i in 0 until current.length()) {
+                            val drama = current.getJSONObject(i)
                             val id = drama.optLong("bookId")
-                            if (id != 0L && seenIds.add(id)) list.put(drama)
+                            if (id != 0L && mergedIds.add(id)) merged.put(drama)
+                        }
+                        var added = 0
+                        collectReelShortBooks(data).forEach { item ->
+                            val sId = item.optString("book_id", item.optString("bookId", item.optString("t_book_id")))
+                            if (sId.isNotEmpty()) {
+                                val derivedId = sId.hashCode().toLong()
+                                if (mergedIds.add(derivedId)) {
+                                    merged.put(JSONObject().apply {
+                                        put("bookId", derivedId)
+                                        put("realBookId", sId)
+                                        put("bookName", item.optString("book_title", item.optString("title", item.optString("bookName"))))
+                                        put("cover", item.optString("book_pic", item.optString("cover", item.optString("coverUrl"))))
+                                        put("chapterCount", item.optInt("chapter_count", item.optInt("totalEpisodes", item.optInt("chapterCount"))))
+                                        put("is_reelshort", true)
+                                    })
+                                    added++
+                                }
+                            }
+                        }
+                        if (added > 0) {
+                            sanitized = sanitizeDramas(merged)
+                            if (sanitized.length() > 0) {
+                                _dramas.value = sanitized
+                                CacheManager.put("tab_$tab", sanitized)
+                            }
                         }
                     }
-                } catch (_: Exception) {}
-            }
+                }
 
-            if (list.length() < 50) {
-                try {
-                    val rndRes = DramaBoxApi.randomDrama()
-                    val rndData = rndRes.optJSONObject("data")
-                    val rndRecs = rndData?.optJSONArray("recommendList")
-                    if (rndRecs != null) {
-                        for (i in 0 until rndRecs.length()) {
-                            val drama = rndRecs.optJSONObject(i) ?: continue
-                            val id = drama.optLong("bookId")
-                            if (id != 0L && seenIds.add(id)) list.put(drama)
-                        }
-                    }
-                } catch (_: Exception) {}
-            }
-
-            val sanitized = sanitizeDramas(list)
-            _dramas.value = sanitized
-            CacheManager.put("tab_$tab", sanitized)
-            
-            // Trigger load more if density is still low
-            if (sanitized.length() < 30 && sanitized.length() > 0) {
-                loadMore()
+                // loadMore() bails out while _loading is true, so clear it first.
+                _loading.value = false
+                if (sanitized.length() < 30 && sanitized.length() > 0) {
+                    loadMore()
+                }
             }
         } catch (e: Exception) {
-            e.printStackTrace()
-            _dramas.value = JSONArray()
+            Log.e(TAG, "Failed to load tab '$tab'", e)
+            // Do not wipe the list on failure: fall back to a non-empty cache
+            // (or keep whatever is already on screen) instead of blanking the UI.
+            if (_dramas.value.length() == 0) {
+                val cached = CacheManager.get("tab_$tab") as? JSONArray
+                if (cached != null && cached.length() > 0) {
+                    _dramas.value = cached
+                }
+            }
         }
         _loading.value = false
     }
@@ -692,62 +930,99 @@ class DramaViewModel : ViewModel() {
 
         _loading.value = true
         try {
-            // 1. Regular search (by title/keyword)
-            val res = DramaBoxApi.search(keyword)
-            val suggestList = res.optJSONObject("data")?.optJSONArray("suggestList") ?: JSONArray()
-            
-            // 2. Category search if keyword matches or contains a known category
-            val matchedCategory = DramaCategories.ALL.find { 
-                it.equals(keyword, ignoreCase = true) || 
-                it.contains(keyword, ignoreCase = true) ||
-                keyword.contains(it, ignoreCase = true)
-            }
-            
-            val categoryList = if (matchedCategory != null) {
-                when (matchedCategory) {
-                    "Trending" -> {
-                        val resTrend = DramaBoxApi.trendings()
-                        resTrend.optJSONObject("data")?.optJSONArray("rankList") ?: JSONArray()
-                    }
-                    "Dub in" -> {
-                        val resDub = DramaBoxApi.dubindo()
-                        resDub.optJSONObject("data")?.optJSONObject("classifyBookList")?.optJSONArray("records") ?: JSONArray()
-                    }
-                    else -> {
-                        val id = (DramaCategories.ALL.indexOf(matchedCategory) - 1).toString()
-                        val catRes = DramaBoxApi.categorySearch(id)
-                        val classifyData = catRes.optJSONObject("data")?.optJSONObject("classifyBookList")
-                        classifyData?.optJSONArray("records") ?: JSONArray()
+            coroutineScope {
+                val dbJob = async {
+                    try {
+                        DramaBoxApi.search(keyword)
+                    } catch (e: Exception) {
+                        Log.e(TAG, "DramaBox search failed for '$keyword'", e)
+                        null
                     }
                 }
-            } else {
-                JSONArray()
-            }
+                val rsJob = async {
+                    try {
+                        reelShortApi.search(keyword).also {
+                            if (it.optBoolean("success", false)) _reelShortError.value = null
+                        }
+                    } catch (e: Exception) {
+                        Log.e(TAG, "ReelShort search failed for '$keyword'", e)
+                        _reelShortError.value = "ReelShort is temporarily unavailable"
+                        null
+                    }
+                }
 
-            // Merge results
-            val merged = JSONArray()
-            val seenIds = mutableSetOf<Long>()
-            
-            // Prioritize results that have the keyword in their title or are from the matched category
-            for (i in 0 until suggestList.length()) {
-                val drama = suggestList.getJSONObject(i)
-                val id = drama.optLong("bookId")
-                if (id != 0L && seenIds.add(id)) {
-                    merged.put(drama)
+                val res = dbJob.await()
+                val rsRes = rsJob.await()
+
+                val merged = JSONArray()
+                val seenIds = mutableSetOf<Long>()
+
+                if (res != null) {
+                    val suggestList = res.optJSONObject("data")?.optJSONArray("suggestList") ?: JSONArray()
+                    for (i in 0 until suggestList.length()) {
+                        val drama = suggestList.getJSONObject(i)
+                        val id = drama.optLong("bookId")
+                        if (id != 0L && seenIds.add(id)) {
+                            merged.put(drama)
+                        }
+                    }
+                    
+                    val matchedCategory = DramaCategories.ALL.find { 
+                        it.equals(keyword, ignoreCase = true) || 
+                        it.contains(keyword, ignoreCase = true) ||
+                        keyword.contains(it, ignoreCase = true)
+                    }
+                    
+                    if (matchedCategory != null) {
+                        val categoryList = when (matchedCategory) {
+                            "Trending" -> {
+                                val resTrend = DramaBoxApi.trendings()
+                                resTrend.optJSONObject("data")?.optJSONArray("rankList") ?: JSONArray()
+                            }
+                            "Dub in" -> {
+                                val resDub = DramaBoxApi.dubindo()
+                                resDub.optJSONObject("data")?.optJSONObject("classifyBookList")?.optJSONArray("records") ?: JSONArray()
+                            }
+                            else -> {
+                                val id = (DramaCategories.ALL.indexOf(matchedCategory) - 1).toString()
+                                val catRes = DramaBoxApi.categorySearch(id)
+                                val classifyData = catRes.optJSONObject("data")?.optJSONObject("classifyBookList")
+                                classifyData?.optJSONArray("records") ?: JSONArray()
+                            }
+                        }
+                        for (i in 0 until categoryList.length()) {
+                            val drama = categoryList.getJSONObject(i)
+                            val id = drama.optLong("bookId")
+                            if (id != 0L && seenIds.add(id)) merged.put(drama)
+                        }
+                    }
                 }
-            }
-            
-            for (i in 0 until categoryList.length()) {
-                val drama = categoryList.getJSONObject(i)
-                val id = drama.optLong("bookId")
-                if (id != 0L && seenIds.add(id)) {
-                    merged.put(drama)
+
+                if (rsRes != null && rsRes.optBoolean("success", false)) {
+                    val results = rsRes.optJSONArray("results") ?: JSONArray()
+                    for (i in 0 until results.length()) {
+                        val item = results.optJSONObject(i) ?: continue
+                        val sId = item.optString("bookId", item.optString("book_id", item.optString("t_book_id")))
+                        if (sId.isNotEmpty()) {
+                            val derivedId = sId.hashCode().toLong()
+                            if (seenIds.add(derivedId)) {
+                                merged.put(JSONObject().apply {
+                                    put("bookId", derivedId)
+                                    put("realBookId", sId)
+                                    put("bookName", item.optString("title", item.optString("book_title", item.optString("bookName"))))
+                                    put("cover", item.optString("cover", item.optString("book_pic", item.optString("coverUrl"))))
+                                    put("chapterCount", item.optInt("chapterCount", item.optInt("chapter_count", item.optInt("totalEpisodes"))))
+                                    put("is_reelshort", true)
+                                })
+                            }
+                        }
+                    }
                 }
+                
+                _dramas.value = sanitizeDramas(merged)
             }
-            
-            _dramas.value = sanitizeDramas(merged)
         } catch (e: Exception) {
-            e.printStackTrace()
+            Log.e(TAG, "Search failed for '$keyword'", e)
         }
         _loading.value = false
     }
@@ -854,7 +1129,9 @@ class DramaViewModel : ViewModel() {
                                     return@launch
                                 }
                             }
-                        } catch (_: Exception) {}
+                        } catch (e: Exception) {
+                            Log.w(TAG, "Supplemental 'for you' pagination failed", e)
+                        }
                     }
                     _isEndReached.value = true
                 } else {
@@ -906,7 +1183,8 @@ class DramaViewModel : ViewModel() {
                             } else {
                                 _isEndReached.value = true
                             }
-                        } catch (_: Exception) {
+                        } catch (e: Exception) {
+                            Log.w(TAG, "Supplemental 'for you' pagination failed", e)
                             _isEndReached.value = true
                         }
                     } else {
@@ -914,7 +1192,7 @@ class DramaViewModel : ViewModel() {
                     }
                 }
             } catch (e: Exception) {
-                e.printStackTrace()
+                Log.e(TAG, "loadMore failed", e)
             }
             _loading.value = false
         }
@@ -924,10 +1202,60 @@ class DramaViewModel : ViewModel() {
         _selectedDrama.value = drama
         val bookId = drama.optLong("bookId")
 
+        if (drama.optBoolean("is_reelshort", false)) {
+            val realBookId = drama.optString("realBookId")
+            _loading.value = true
+            try {
+                val res = reelShortApi.detail(realBookId)
+                if (res.optBoolean("success", false)) {
+                    val chapters = res.optJSONArray("chapters") ?: JSONArray()
+                    val mappedEps = JSONArray()
+                    for (i in 0 until chapters.length()) {
+                        val ch = chapters.getJSONObject(i) ?: continue
+                        mappedEps.put(JSONObject().apply {
+                            put("chapterIndex", ch.optInt("index") - 1)
+                            put("chapterName", ch.optString("title"))
+                            put("realChapterId", ch.optString("chapterId"))
+                            put("chapterId", ch.optString("chapterId").hashCode().toLong())
+                            put("realBookId", realBookId)
+                            put("is_reelshort", true)
+                            put("isLocked", ch.optBoolean("isLocked", false))
+                            // Episode still frame, used by the episode row artwork.
+                            put(
+                                "chapterImg",
+                                ch.optString("videoPic").ifEmpty { ch.optString("thumbnailUrl") }
+                            )
+                            put("allVideoPaths", JSONArray())
+                            put("videoPath", "")
+                        })
+                    }
+                    val description = res.optString("description")
+                    val updatedDrama = JSONObject(drama.toString()).apply {
+                        put("introduction", description)
+                        put("chapterCount", chapters.length())
+                    }
+                    _selectedDramaDetail.value = updatedDrama
+                    _episodes.value = filterEpisodes(mappedEps)
+                    _reelShortError.value = null
+                    _episodesError.value = null
+                } else {
+                    _reelShortError.value = "ReelShort is temporarily unavailable"
+                    _episodesError.value = "Couldn't load episodes. Check your connection and try again."
+                }
+            } catch (_: Exception) {
+                _reelShortError.value = "ReelShort is temporarily unavailable"
+                _episodesError.value = "Couldn't load episodes. Check your connection and try again."
+            }
+            _loading.value = false
+            return
+        }
+
         if (!forceRefresh) {
             val cachedEps = CacheManager.get("eps_$bookId") as? JSONArray
-            if (cachedEps != null) {
+            // An empty cached list is a failed fetch, never a valid answer.
+            if (cachedEps != null && cachedEps.length() > 0) {
                 _episodes.value = filterEpisodes(cachedEps)
+                _episodesError.value = null
                 // Still fetch detail if missing
                 if (_selectedDramaDetail.value == null) {
                     val detailRes = DramaBoxApi.detail(bookId)
@@ -946,9 +1274,17 @@ class DramaViewModel : ViewModel() {
             val limit = if (_isUnlocked.value) 0 else 7
             val epsRes = EpisodeFetcher.scrapeProcess(bookId, limit)
             _episodes.value = filterEpisodes(epsRes)
-            CacheManager.put("eps_$bookId", epsRes)
+            if (epsRes.length() == 0) {
+                _episodesError.value = "Couldn't load episodes. Check your connection and try again."
+            } else {
+                _episodesError.value = null
+                // Only a successful list is worth caching, an empty one would
+                // keep the drama empty on every later visit.
+                CacheManager.put("eps_$bookId", epsRes)
+            }
         } catch (e: Exception) {
             e.printStackTrace()
+            _episodesError.value = "Couldn't load episodes. Check your connection and try again."
         }
         _loading.value = false
     }
@@ -957,6 +1293,7 @@ class DramaViewModel : ViewModel() {
         _selectedDrama.value = null
         _selectedDramaDetail.value = null
         _episodes.value = JSONArray()
+        _episodesError.value = null
     }
 
     fun setPipMode(active: Boolean) {
@@ -965,6 +1302,105 @@ class DramaViewModel : ViewModel() {
 
     fun setPlayingEpisode(episode: JSONObject?) {
         _playingEpisode.value = episode
+        if (episode != null &&
+            episode.optBoolean("is_reelshort", false) &&
+            episode.optJSONArray("allVideoPaths")?.length() == 0
+        ) {
+            viewModelScope.launch { fetchReelShortEpisode(episode) }
+        }
+    }
+
+    private fun fetchReelShortEpisode(ep: JSONObject) {
+        val realBookId = ep.optString("realBookId")
+        val realChapterId = ep.optString("realChapterId")
+        if (realBookId.isEmpty() || realChapterId.isEmpty()) return
+        viewModelScope.launch {
+            try {
+                val res = reelShortApi.episodeByChapter(realBookId, realChapterId, true)
+                if (!res.optBoolean("success", false)) {
+                    markEpisodeUnavailable(ep, res.optString("message", "This episode is unavailable right now."))
+                    return@launch
+                }
+                val videoList = res.optJSONArray("videoList") ?: JSONArray()
+                if (videoList.length() == 0) {
+                    markEpisodeUnavailable(
+                        ep,
+                        res.optString(
+                            "errorReason",
+                            if (res.optBoolean("isLocked", false)) "This episode is locked. Unlock to watch it."
+                            else "This episode is not available for playback right now."
+                        ),
+                        res.optBoolean("isLocked", false)
+                    )
+                    return@launch
+                }
+
+                val updated = JSONObject()
+                val keys = ep.keys()
+                while (keys.hasNext()) {
+                    val k = keys.next()
+                    updated.put(k, ep.get(k))
+                }
+                updated.put("isLocked", false)
+                updated.put("playbackError", "")
+                val art = res.optString("videoPic").ifEmpty { res.optString("thumbnailUrl") }
+                if (art.isNotEmpty()) updated.put("chapterImg", art)
+                applyReelShortVideoPaths(updated, videoList)
+
+                val current = _episodes.value
+                val newArr = JSONArray()
+                for (i in 0 until current.length()) {
+                    val item = current.optJSONObject(i)
+                    if (item != null && item.optString("realChapterId") == realChapterId) {
+                        newArr.put(updated)
+                    } else if (item != null) {
+                        newArr.put(item)
+                    }
+                }
+                _episodes.value = newArr
+
+                if (_playingEpisode.value?.optString("realChapterId") == realChapterId) {
+                    _playingEpisode.value = updated
+                }
+                _reelShortError.value = null
+            } catch (_: Exception) {
+                markEpisodeUnavailable(ep, "This episode is unavailable right now.")
+            }
+        }
+    }
+
+    /**
+     * Flags an episode that cannot be played (locked, not yet released, upstream error)
+     * so the UI can explain it instead of showing an endless loading spinner.
+     */
+    private fun markEpisodeUnavailable(ep: JSONObject, reason: String, locked: Boolean = false) {
+        val realChapterId = ep.optString("realChapterId")
+        val updated = JSONObject()
+        val keys = ep.keys()
+        while (keys.hasNext()) {
+            val k = keys.next()
+            updated.put(k, ep.get(k))
+        }
+        updated.put("isLocked", locked || ep.optBoolean("isLocked", false))
+        updated.put("playbackError", reason)
+        updated.put("videoPath", "")
+        updated.put("videoPaths", JSONArray())
+
+        val current = _episodes.value
+        val newArr = JSONArray()
+        for (i in 0 until current.length()) {
+            val item = current.optJSONObject(i)
+            if (item != null && item.optString("realChapterId") == realChapterId) {
+                newArr.put(updated)
+            } else if (item != null) {
+                newArr.put(item)
+            }
+        }
+        _episodes.value = newArr
+        if (_playingEpisode.value?.optString("realChapterId") == realChapterId) {
+            _playingEpisode.value = updated
+        }
+        Log.w(TAG, "Episode $realChapterId unavailable: $reason")
     }
 
     fun checkForUpdatesAuto(currentVersion: String) {
@@ -998,6 +1434,16 @@ class DramaViewModel : ViewModel() {
         } catch (e: Exception) {
             e.printStackTrace()
             null
+        }
+    }
+
+    fun retryReelShort() {
+        viewModelScope.launch {
+            _reelShortError.value = null
+            val result = runCatching { reelShortApi.homepage() }
+            if (result.getOrNull()?.optBoolean("success", false) != true) {
+                _reelShortError.value = "ReelShort is temporarily unavailable"
+            }
         }
     }
 }
